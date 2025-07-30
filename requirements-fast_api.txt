@@ -1,0 +1,10 @@
+# --- web layer --------------------------------------------------------------
+fastapi==0.115.14            # validated on pydantic ≥2.11,<3
+uvicorn[standard]==0.35.0
+pydantic>=2.11,<3
+
+# ---------------------------------------------------------------------------
+# Everything below is *already* installed earlier in the image (torch 2.7,
+# diffusers 0.33, transformers 4.51 …).  Re-installing or downgrading them
+# here only risks dependency conflicts and longer build times, so we omit
+# them.
