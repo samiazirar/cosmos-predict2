@@ -43,4 +43,23 @@ RUN pip install --no-cache-dir -r /requirements.txt
 RUN mkdir -p /workspace
 WORKDIR /workspace
 
+
+#Install the other required packages
+COPY ./requirements-fast_api.txt /requirements.txt
+RUN pip install --no-cache-dir -r /requirements.txt
+RUN mkdir -p /workspace
+
+WORKDIR /workspace
+
+#download the cosmos_predict 2 from the git repo and copy all files to the workspace
+RUN git clone https://github.com/samiazirar/cosmos-predict2.git
+#copy all files at once to the workspace from the pulled cosmos_predict2 repo
+# RUN cp -r /workspace/cosmos-predict2/* /workspace/
+#start from the repo
+#your root is the folder where the repo is cloned in 
+
+
+
+
 CMD ["/bin/bash"]
+
