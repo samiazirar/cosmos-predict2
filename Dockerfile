@@ -52,7 +52,12 @@ RUN mkdir -p /workspace
 WORKDIR /workspace
 
 #download the cosmos_predict 2 from the git repo and copy all files to the workspace
-RUN git clone https://github.com/samiazirar/cosmos-predict2.git
+#remove the previous repo if it exists
+RUN rm -rf /workspace/cosmos-predict2
+RUN git clone https://github.com/samiazirar/cosmos-predict2.git 
+RUN mv /workspace/cosmos-predict2/* /workspace/
+RUN mv /workspace/cosmos-predict2/.git /workspace/
+RUN rm -rf /workspace/cosmos-predict2
 #copy all files at once to the workspace from the pulled cosmos_predict2 repo
 # RUN cp -r /workspace/cosmos-predict2/* /workspace/
 #start from the repo

@@ -1,0 +1,13 @@
+- [] Huggingface token needed!
+
+- error with packages. needs attrs 25.1 not 25.3 which it gets from somewhere ele
+
+
+PYTHONPATH=. torchrun --nproc_per_node=${NUM_GPUS} examples/video2world.py \
+    --model_size 14B \
+    --input_path assets/video2world/input0.jpg \
+    --prompt "${PROMPT}" \
+    --save_path output/video2world_14b_${NUM_GPUS}gpu.mp4 \
+    --num_gpus ${NUM_GPUS} \
+    --disable_guardrail \
+    --disable_prompt_refiner
