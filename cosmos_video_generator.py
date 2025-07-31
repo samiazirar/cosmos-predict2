@@ -117,40 +117,73 @@ def generate_cosmos_video(
     try:
         # Execute the command
         print(f"Executing: {command_str}")
-        result = subprocess.run(
+        print("Starting Cosmos video generation...")
+        
+        # Use Popen for real-time output streaming
+        process = subprocess.Popen(
             cmd_parts,
             env=env,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,  # Combine stderr with stdout
             text=True,
-            timeout=3600  # 1 hour timeout
+            bufsize=1,  # Line buffered
+            universal_newlines=True
         )
         
-        if result.returncode == 0:
+        # Stream output in real-time
+        stdout_lines = []
+        while True:
+            output = process.stdout.readline()
+            if output == '' and process.poll() is not None:
+                break
+            if output:
+                print(output.strip())  # Print to console for real-time feedback
+                stdout_lines.append(output.strip())
+        
+        # Wait for process to complete and get return code
+        return_code = process.poll()
+        stdout_text = '\n'.join(stdout_lines)
+        
+        if return_code == 0:
+            print(f"✓ Video generation completed successfully: {save_path}")
             return {
                 "success": True,
                 "output_path": save_path,
                 "command": command_str,
-                "stdout": result.stdout,
-                "stderr": result.stderr
+                "stdout": stdout_text,
+                "stderr": ""
             }
         else:
+            print(f"✗ Video generation failed with return code {return_code}")
             return {
                 "success": False,
-                "error": f"Command failed with return code {result.returncode}",
+                "error": f"Command failed with return code {return_code}",
                 "output_path": None,
                 "command": command_str,
-                "stdout": result.stdout,
-                "stderr": result.stderr
+                "stdout": stdout_text,
+                "stderr": ""
             }
             
     except subprocess.TimeoutExpired:
+        print("✗ Video generation timed out after 1 hour")
         return {
             "success": False,
             "error": "Command timed out after 1 hour",
             "output_path": None,
             "command": command_str
         }
+    except KeyboardInterrupt:
+        print("✗ Video generation interrupted by user")
+        if 'process' in locals():
+            process.terminate()
+        return {
+            "success": False,
+            "error": "Generation interrupted by user",
+            "output_path": None,
+            "command": command_str
+        }
     except Exception as e:
+        print(f"✗ Unexpected error during video generation: {str(e)}")
         return {
             "success": False,
             "error": f"Unexpected error: {str(e)}",

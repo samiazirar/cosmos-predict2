@@ -109,6 +109,12 @@ def generate_cosmos_video_from_prompt(
         output_filename = f"cosmos_{uuid.uuid4().hex}.mp4"
         output_path = os.path.join(OUT_DIR, output_filename)
         
+        print(f"🎬 Starting video generation...")
+        print(f"   Prompt: {prompt}")
+        print(f"   Input: {input_path}")
+        print(f"   Output: {output_path}")
+        print(f"   Model: {COSMOS_MODEL_SIZE}, GPUs: {COSMOS_NUM_GPUS}")
+        
         # Call the Cosmos generator
         result = generate_cosmos_video(
             prompt=prompt,
@@ -122,8 +128,10 @@ def generate_cosmos_video_from_prompt(
         )
         
         if result["success"]:
+            print(f"✅ Video generation completed: {result['output_path']}")
             return result["output_path"]
         else:
+            print(f"❌ Video generation failed: {result['error']}")
             raise HTTPException(500, f"Cosmos generation failed: {result['error']}")
             
     except Exception as e:
