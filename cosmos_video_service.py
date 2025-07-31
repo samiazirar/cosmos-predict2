@@ -45,7 +45,7 @@ os.makedirs(OUT_DIR, exist_ok=True)
 
 # Cosmos configuration
 COSMOS_MODEL_SIZE = os.getenv("COSMOS_MODEL_SIZE", "14B")
-COSMOS_NUM_GPUS = int(os.getenv("COSMOS_NUM_GPUS", "1"))
+COSMOS_NUM_GPUS = int(os.getenv("COSMOS_NUM_GPUS", "4"))
 COSMOS_DISABLE_GUARDRAIL = os.getenv("COSMOS_DISABLE_GUARDRAIL", "true").lower() == "true"
 COSMOS_DISABLE_PROMPT_REFINER = os.getenv("COSMOS_DISABLE_PROMPT_REFINER", "true").lower() == "true"
 
