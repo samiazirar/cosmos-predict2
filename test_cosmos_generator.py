@@ -26,7 +26,7 @@ def test_basic_generation():
             prompt=test_prompt,
             input_path=test_input,
             model_size="14B",
-            num_gpus=1,
+            num_gpus=4,
             disable_guardrail=True,
             disable_prompt_refiner=True
         )
@@ -97,7 +97,7 @@ def test_command_building():
             prompt="Test prompt",
             input_path="test_input.jpg",
             model_size="2B",
-            num_gpus=2,
+            num_gpus=4,
             resolution="480",
             fps=16,
             aspect_ratio="16:9"
