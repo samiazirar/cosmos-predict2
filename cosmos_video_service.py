@@ -180,6 +180,7 @@ def _gen_single_frame(
             num_gpus=COSMOS_NUM_GPUS,
             disable_guardrail=COSMOS_DISABLE_GUARDRAIL,
             disable_prompt_refiner=COSMOS_DISABLE_PROMPT_REFINER,
+            capture_output=False,  # Don't capture output to show progress bars
             **kwargs,
         )
         if result["success"]:
@@ -214,6 +215,7 @@ def _gen_multi_frame(
             num_gpus=COSMOS_NUM_GPUS,
             disable_guardrail=COSMOS_DISABLE_GUARDRAIL,
             disable_prompt_refiner=COSMOS_DISABLE_PROMPT_REFINER,
+            capture_output=False,  # Don't capture output to show progress bars
             num_conditional_frames=num_conditional_frames,
             **kwargs,
         )
@@ -513,6 +515,7 @@ def generate_direct(
             image,
             model_size=_model_size,
             num_gpus=_num_gpus,
+            capture_output=False,  # Don't capture output to show progress bars
         )
     elif 2 <= num_conditional_frames <= 4:
         raise HTTPException(
@@ -533,6 +536,7 @@ def generate_direct(
             num_conditional_frames=num_conditional_frames,
             model_size=_model_size,
             num_gpus=_num_gpus,
+            capture_output=False,  # Don't capture output to show progress bars
         )
 
     return {

@@ -22,6 +22,7 @@ def generate_cosmos_video(
     num_gpus: int = 1,
     disable_guardrail: bool = True,
     disable_prompt_refiner: bool = True,
+    capture_output: bool = False,
     **kwargs
 ) -> Dict[str, Any]:
     """
@@ -35,6 +36,7 @@ def generate_cosmos_video(
         num_gpus (int): Number of GPUs to use for generation
         disable_guardrail (bool): Whether to disable guardrail checks
         disable_prompt_refiner (bool): Whether to disable prompt refiner
+        capture_output (bool): Whether to capture stdout/stderr. If False, output streams directly to console (shows progress bars)
         **kwargs: Additional arguments to pass to the video2world.py script
         
     Returns:
@@ -117,31 +119,53 @@ def generate_cosmos_video(
     try:
         # Execute the command
         print(f"Executing: {command_str}")
-        result = subprocess.run(
-            cmd_parts,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=3600  # 1 hour timeout
-        )
-        
-        if result.returncode == 0:
-            return {
-                "success": True,
-                "output_path": save_path,
-                "command": command_str,
-                "stdout": result.stdout,
-                "stderr": result.stderr
-            }
+        if capture_output:
+            result = subprocess.run(
+                cmd_parts,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=3600  # 1 hour timeout
+            )
+            
+            if result.returncode == 0:
+                return {
+                    "success": True,
+                    "output_path": save_path,
+                    "command": command_str,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Command failed with return code {result.returncode}",
+                    "output_path": None,
+                    "command": command_str,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr
+                }
         else:
-            return {
-                "success": False,
-                "error": f"Command failed with return code {result.returncode}",
-                "output_path": None,
-                "command": command_str,
-                "stdout": result.stdout,
-                "stderr": result.stderr
-            }
+            # Stream output directly to console (shows progress bars)
+            result = subprocess.run(
+                cmd_parts,
+                env=env,
+                timeout=3600  # 1 hour timeout
+            )
+            
+            if result.returncode == 0:
+                return {
+                    "success": True,
+                    "output_path": save_path,
+                    "command": command_str
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Command failed with return code {result.returncode}",
+                    "output_path": None,
+                    "command": command_str
+                }
             
     except subprocess.TimeoutExpired:
         return {
