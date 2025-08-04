@@ -39,7 +39,7 @@ from typing import List, Dict, Any, Optional
 
 import cv2                                          # ← NEW (used to grab last frame)
 import requests
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from starlette.responses import FileResponse
@@ -96,6 +96,17 @@ def _fetch_image(url: str) -> Image.Image:
 def _download_video(url: str) -> str:
     """Download remote video to a temp file and return its path."""
     try:
+        # Handle local temp video URLs
+        if url.startswith("/temp_video/"):
+            file_id = url.split("/temp_video/")[1]
+            temp_dir = os.path.join(OUT_DIR, "temp_uploads")
+            local_path = os.path.join(temp_dir, file_id)
+            if os.path.exists(local_path):
+                return local_path
+            else:
+                raise HTTPException(404, f"Temporary video file not found: {file_id}")
+        
+        # Handle remote URLs
         resp = requests.get(url, timeout=30, stream=True)
         resp.raise_for_status()
         temp_dir = os.path.join(OUT_DIR, "temp_inputs")
@@ -397,6 +408,59 @@ def chat_completions(req: ChatCompletionRequest, http_request: Request):
         model=req.model,
         choices=[choice],
     )
+
+
+# --------------------------------------------------------------------------- #
+# File upload endpoint for videos
+# --------------------------------------------------------------------------- #
+
+@app.post("/upload_video")
+async def upload_video(file: UploadFile = File(...)):
+    """
+    Upload a video file and return a temporary URL that can be used 
+    with the video generation endpoints.
+    """
+    if not file.filename.lower().endswith(_VIDEO_EXTENSIONS):
+        raise HTTPException(400, f"File must be a video with extension: {_VIDEO_EXTENSIONS}")
+    
+    # Save uploaded file to temp directory
+    temp_dir = os.path.join(OUT_DIR, "temp_uploads")
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    file_id = f"upload_{uuid.uuid4().hex}_{file.filename}"
+    upload_path = os.path.join(temp_dir, file_id)
+    
+    try:
+        content = await file.read()
+        with open(upload_path, "wb") as f:
+            f.write(content)
+        
+        # Return a URL that can be used in video generation requests
+        video_url = f"/temp_video/{file_id}"
+        return {
+            "success": True,
+            "video_url": video_url,
+            "file_id": file_id,
+            "filename": file.filename,
+            "size": len(content)
+        }
+    except Exception as e:
+        if os.path.exists(upload_path):
+            try:
+                os.remove(upload_path)
+            except:
+                pass
+        raise HTTPException(500, f"Failed to upload file: {e}")
+
+
+@app.get("/temp_video/{file_id}")
+def get_temp_video(file_id: str):
+    """Serve temporarily uploaded video files."""
+    temp_dir = os.path.join(OUT_DIR, "temp_uploads")
+    path = os.path.join(temp_dir, file_id)
+    if not os.path.exists(path):
+        raise HTTPException(404, "Temporary video file not found")
+    return FileResponse(path, media_type="video/mp4")
 
 
 # --------------------------------------------------------------------------- #

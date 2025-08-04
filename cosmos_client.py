@@ -1,13 +1,32 @@
+#!/usr/bin/env python3
 """
 Cosmos Video Client
+===================
 
-A Python client for the Cosmos Video Generation Service that provides both
-OpenAI-compatible and direct API interfaces.
+A Python client for the Cosmos Video Generation Service that now supports
 
-Usage:
-    python cosmos_client.py                           # Run with example
-    python cosmos_client.py --help                    # Show all options
-    python cosmos_client.py --prompt "your prompt"    # Custom prompt
+▸ **Images *and* Videos** as conditioning input  
+▸ **num_conditional_frames** (1 = single-frame, ≥ 5 = multi-frame)  
+▸ Both the **OpenAI-compatible** `/v1/chat/completions` and the
+  **direct** `/generate` endpoints
+
+--------------------------------------------------------------------
+Quick examples
+--------------------------------------------------------------------
+# 1 — Single-frame from an image (default behaviour unchanged)
+python cosmos_client.py --prompt "A robot in a garden" --image ./frame.jpg
+
+# 2 — Single-frame from *last* frame of a video
+python cosmos_client.py --prompt "Turn last frame into Pixar style" \
+                        --video ./my_video.mp4 \
+                        --num-frames 1
+
+# 3 — Five-frame conditioning from a video
+python cosmos_client.py --prompt "Make it snow" \
+                        --video ./my_video.mp4 \
+                        --num-frames 5
+
+Run  `python cosmos_client.py -h`  to see all options.
 """
 
 import os
@@ -22,363 +41,353 @@ from pathlib import Path
 
 class CosmosVideoClient:
     """Client for Cosmos Video Generation Service."""
-    
+
     def __init__(self, base_url: str = "http://localhost:8001"):
-        """Initialize the client.
-        
-        Args:
-            base_url: Base URL of the Cosmos video service
-        """
-        self.base_url = base_url.rstrip('/')
+        self.base_url = base_url.rstrip("/")
         self.session = requests.Session()
-        
+
+    # --------------------------------------------------------------------- #
+    # Utilities
+    # --------------------------------------------------------------------- #
+
     def health_check(self) -> Dict[str, Any]:
-        """Check if the service is healthy and get configuration."""
-        try:
-            response = self.session.get(f"{self.base_url}/health")
-            response.raise_for_status()
-            return response.json()
-        except Exception as e:
-            raise ConnectionError(f"Service health check failed: {e}")
-    
+        response = self.session.get(f"{self.base_url}/health", timeout=10)
+        response.raise_for_status()
+        return response.json()
+
     def ping(self) -> Dict[str, Any]:
-        """Simple ping to check service availability."""
-        try:
-            response = self.session.get(f"{self.base_url}/ping")
-            response.raise_for_status()
-            return response.json()
-        except Exception as e:
-            raise ConnectionError(f"Service ping failed: {e}")
-    
-    def _encode_image_to_data_uri(self, image_path: str) -> str:
-        """Encode local image file to data URI."""
-        if not os.path.exists(image_path):
-            raise FileNotFoundError(f"Image file not found: {image_path}")
-        
-        with open(image_path, 'rb') as f:
-            image_data = f.read()
-        
-        # Determine MIME type based on file extension
-        ext = Path(image_path).suffix.lower()
-        mime_types = {
-            '.jpg': 'image/jpeg',
-            '.jpeg': 'image/jpeg',
-            '.png': 'image/png',
-            '.gif': 'image/gif',
-            '.webp': 'image/webp'
+        response = self.session.get(f"{self.base_url}/ping", timeout=10)
+        response.raise_for_status()
+        return response.json()
+
+    @staticmethod
+    def _encode_file_to_data_uri(path: str, mime_fallback: str) -> str:
+        if not os.path.exists(path):
+            raise FileNotFoundError(path)
+        with open(path, "rb") as fh:
+            data = fh.read()
+        ext = Path(path).suffix.lower()
+        mime_map = {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+            ".mp4": "video/mp4",
+            ".mov": "video/quicktime",
+            ".webm": "video/webm",
         }
-        mime_type = mime_types.get(ext, 'image/jpeg')
+        mime = mime_map.get(ext, mime_fallback)
+        b64 = base64.b64encode(data).decode()
+        return f"data:{mime};base64,{b64}"
+
+    # --------------------------------------------------------------------- #
+    # Video upload helper
+    # --------------------------------------------------------------------- #
+
+    def upload_video(self, video_path: str) -> Dict[str, Any]:
+        """Upload a local video file to the server and return a temporary URL."""
+        if not os.path.exists(video_path):
+            raise FileNotFoundError(f"Video file not found: {video_path}")
         
-        b64_data = base64.b64encode(image_data).decode('utf-8')
-        return f"data:{mime_type};base64,{b64_data}"
-    
+        try:
+            with open(video_path, "rb") as f:
+                files = {"file": (os.path.basename(video_path), f, "video/mp4")}
+                response = self.session.post(
+                    f"{self.base_url}/upload_video",
+                    files=files,
+                    timeout=300  # Longer timeout for video uploads
+                )
+                response.raise_for_status()
+                return response.json()
+        except requests.RequestException as exc:
+            return {
+                "success": False,
+                "error": f"Upload failed: {exc}",
+                "details": getattr(exc.response, "text", ""),
+            }
+
+    # --------------------------------------------------------------------- #
+    # OpenAI-compatible endpoint
+    # --------------------------------------------------------------------- #
+
     def generate_video_openai_style(
-        self, 
-        prompt: str, 
+        self,
+        prompt: str,
+        *,
         image_path: Optional[str] = None,
         image_url: Optional[str] = None,
-        model: str = "cosmos-video-001"
+        video_path: Optional[str] = None,
+        video_url: Optional[str] = None,
+        num_conditional_frames: int = 1,
+        model: str = "cosmos-video-001",
     ) -> Dict[str, Any]:
-        """Generate video using OpenAI-compatible chat completions endpoint.
-        
-        Args:
-            prompt: Text prompt for video generation
-            image_path: Path to local image file (optional)
-            image_url: URL or data URI of image (optional) 
-            model: Model name to use
-            
-        Returns:
-            Dictionary with video URL and metadata
         """
-        # Prepare message content
+        Call `/v1/chat/completions`.
+
+        Exactly one of {image_path, image_url, video_path, video_url}
+        may be supplied.
+        """
+        # -----------------------------------------------------------------
+        # Validate & prepare media
+        # -----------------------------------------------------------------
+        supplied = [v for v in (image_path, image_url, video_path, video_url) if v]
+        if len(supplied) > 1:
+            raise ValueError("Provide at most one media input (image or video).")
+
         content = [{"type": "text", "text": prompt}]
-        
-        # Add image if provided
         if image_path:
-            image_uri = self._encode_image_to_data_uri(image_path)
-            content.append({"type": "image_url", "image_url": {"url": image_uri}})
+            uri = self._encode_file_to_data_uri(image_path, "image/jpeg")
+            content.append({"type": "image_url", "image_url": {"url": uri}})
         elif image_url:
             content.append({"type": "image_url", "image_url": {"url": image_url}})
-        
-        # Prepare request
-        request_data = {
+        elif video_path:
+            # Upload local video file and get temporary URL
+            print(f"Uploading video file: {video_path}")
+            upload_result = self.upload_video(video_path)
+            if not upload_result.get("success"):
+                raise ValueError(f"Failed to upload video: {upload_result.get('error')}")
+            
+            video_url = f"{self.base_url}{upload_result['video_url']}"
+            content.append({"type": "image_url", "image_url": {"url": video_url}})
+        elif video_url:
+            content.append({"type": "image_url", "image_url": {"url": video_url}})
+
+        req_json = {
             "model": model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": content
-                }
-            ]
+            "num_conditional_frames": num_conditional_frames,
+            "messages": [{"role": "user", "content": content}],
         }
-        
+
         try:
-            response = self.session.post(
+            res = self.session.post(
                 f"{self.base_url}/v1/chat/completions",
-                json=request_data,
-                timeout=3000  # 5 minutes timeout for video generation
+                json=req_json,
+                timeout=3000,
             )
-            response.raise_for_status()
-            
-            result = response.json()
-            
-            # Extract video URL from response
-            video_url = result["choices"][0]["message"]["content"]
-            metadata = result["choices"][0]["message"].get("metadata", {})
-            
+            res.raise_for_status()
+            payload = res.json()
+
+            url = payload["choices"][0]["message"]["content"]
+            meta = payload["choices"][0]["message"].get("metadata", {})
+            full = f"{self.base_url}{url}" if url.startswith("/") else url
             return {
                 "success": True,
-                "video_url": video_url,
-                "full_url": f"{self.base_url}{video_url}" if video_url.startswith('/') else video_url,
-                "metadata": metadata,
-                "response_id": result["id"],
-                "model": result["model"]
+                "video_url": url,
+                "full_url": full,
+                "metadata": meta,
+                "response_id": payload["id"],
+                "model": payload["model"],
             }
-            
-        except requests.exceptions.RequestException as e:
+        except requests.RequestException as exc:
             return {
                 "success": False,
-                "error": f"Request failed: {e}",
-                "details": getattr(e.response, 'text', '') if hasattr(e, 'response') else ''
+                "error": f"HTTP request failed: {exc}",
+                "details": getattr(exc.response, "text", ""),
             }
-        except Exception as e:
-            return {
-                "success": False,
-                "error": f"Unexpected error: {e}"
-            }
-    
+
+    # --------------------------------------------------------------------- #
+    # Direct endpoint
+    # --------------------------------------------------------------------- #
+
     def generate_video_direct(
         self,
         prompt: str,
+        *,
         image_path: Optional[str] = None,
         image_url: Optional[str] = None,
+        video_path: Optional[str] = None,
+        video_url: Optional[str] = None,
+        num_conditional_frames: int = 1,
         model_size: Optional[str] = None,
-        num_gpus: Optional[int] = None
+        num_gpus: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Generate video using direct endpoint.
-        
-        Args:
-            prompt: Text prompt for video generation
-            image_path: Path to local image file (optional)
-            image_url: URL or data URI of image (optional)
-            model_size: Cosmos model size (optional)
-            num_gpus: Number of GPUs to use (optional)
-            
-        Returns:
-            Dictionary with video path and metadata
-        """
-        # Prepare image URL
-        final_image_url = None
-        if image_path:
-            final_image_url = self._encode_image_to_data_uri(image_path)
-        elif image_url:
-            final_image_url = image_url
-        
-        # Prepare request data
-        data = {"prompt": prompt}
-        if final_image_url:
-            data["image_url"] = final_image_url
+        """Call `/generate`."""
+        supplied = [v for v in (image_path, image_url, video_path, video_url) if v]
+        if len(supplied) > 1:
+            raise ValueError("Provide at most one media input (image or video).")
+
+        data: Dict[str, Any] = {
+            "prompt": prompt,
+            "num_conditional_frames": num_conditional_frames,
+        }
         if model_size:
             data["model_size"] = model_size
         if num_gpus:
             data["num_gpus"] = num_gpus
-        
+
+        if image_path:
+            data["image_url"] = self._encode_file_to_data_uri(image_path, "image/jpeg")
+        elif image_url:
+            data["image_url"] = image_url
+        elif video_path:
+            # Upload local video file and get temporary URL
+            print(f"Uploading video file: {video_path}")
+            upload_result = self.upload_video(video_path)
+            if not upload_result.get("success"):
+                raise ValueError(f"Failed to upload video: {upload_result.get('error')}")
+            
+            video_url = f"{self.base_url}{upload_result['video_url']}"
+            data["image_url"] = video_url
+        elif video_url:
+            data["image_url"] = video_url
+
         try:
-            response = self.session.post(
-                f"{self.base_url}/generate",
-                json=data,
-                timeout=3000  # 5 minutes timeout
+            res = self.session.post(
+                f"{self.base_url}/generate", json=data, timeout=3000
             )
-            response.raise_for_status()
-            
-            result = response.json()
-            
-            # Add full download URL
-            if result.get("success") and result.get("download_url"):
-                result["full_download_url"] = f"{self.base_url}{result['download_url']}"
-            
-            return result
-            
-        except requests.exceptions.RequestException as e:
+            res.raise_for_status()
+            payload = res.json()
+            if payload.get("success") and payload.get("download_url"):
+                payload["full_download_url"] = (
+                    f"{self.base_url}{payload['download_url']}"
+                )
+            return payload
+        except requests.RequestException as exc:
             return {
                 "success": False,
-                "error": f"Request failed: {e}",
-                "details": getattr(e.response, 'text', '') if hasattr(e, 'response') else ''
+                "error": f"HTTP request failed: {exc}",
+                "details": getattr(exc.response, "text", ""),
             }
-        except Exception as e:
-            return {
-                "success": False,
-                "error": f"Unexpected error: {e}"
-            }
-    
+
+    # --------------------------------------------------------------------- #
+    # Download helper
+    # --------------------------------------------------------------------- #
+
     def download_video(self, video_url: str, save_path: str) -> bool:
-        """Download video from URL to local file.
-        
-        Args:
-            video_url: Full URL to video file
-            save_path: Local path to save the video
-            
-        Returns:
-            True if successful, False otherwise
-        """
+        if video_url.startswith("/"):
+            video_url = f"{self.base_url}{video_url}"
         try:
-            # If it's a relative URL, make it absolute
-            if video_url.startswith('/'):
-                video_url = f"{self.base_url}{video_url}"
-                
-            response = self.session.get(video_url, stream=True)
-            response.raise_for_status()
-            
+            res = self.session.get(video_url, stream=True, timeout=300)
+            res.raise_for_status()
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            
-            with open(save_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-            
-            print(f"Video downloaded successfully to: {save_path}")
+            with open(save_path, "wb") as fh:
+                for chunk in res.iter_content(chunk_size=8192):
+                    fh.write(chunk)
+            print(f"✓ Downloaded to {save_path}")
             return True
-            
-        except Exception as e:
-            print(f"Download failed: {e}")
+        except Exception as exc:
+            print(f"✗ Download failed: {exc}")
             return False
 
 
+# --------------------------------------------------------------------------- #
+# Demo helpers
+# --------------------------------------------------------------------------- #
+
+
 def create_example_image() -> str:
-    """Create a simple example image for testing."""
-    try:
-        from PIL import Image, ImageDraw
-        
-        # Create a simple test image
-        img = Image.new('RGB', (512, 512), color='lightblue')
-        draw = ImageDraw.Draw(img)
-        
-        # Draw some simple shapes
-        draw.rectangle([100, 100, 400, 400], fill='white', outline='black', width=3)
-        draw.ellipse([150, 150, 350, 350], fill='yellow', outline='orange', width=2)
-        draw.text((200, 240), "TEST", fill='black')
-        
-        # Save to temp location
-        example_path = "/tmp/cosmos_example_input.jpg"
-        img.save(example_path, "JPEG", quality=95)
-        return example_path
-        
-    except ImportError:
-        print("PIL not available, skipping example image creation")
-        return None
+    from PIL import Image, ImageDraw
+
+    path = "/tmp/cosmos_example_input.jpg"
+    img = Image.new("RGB", (512, 512), "lightblue")
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([100, 100, 400, 400], fill="white", outline="black", width=3)
+    draw.ellipse([150, 150, 350, 350], fill="yellow", outline="orange", width=2)
+    draw.text((200, 240), "TEST", fill="black")
+    img.save(path, "JPEG", quality=95)
+    return path
 
 
-def main():
-    """Main function with command line interface."""
-    parser = argparse.ArgumentParser(description="Cosmos Video Generation Client")
-    parser.add_argument("--base-url", default="http://localhost:8001", 
-                       help="Base URL of the Cosmos service")
-    parser.add_argument("--prompt", default="A robot picking up an apple from a table",
-                       help="Text prompt for video generation")
-    parser.add_argument("--image", help="Path to input image file")
-    parser.add_argument("--image-url", help="URL to input image")
-    parser.add_argument("--output", default="/tmp/generated_video.mp4",
-                       help="Output path for downloaded video")
-    parser.add_argument("--method", choices=["openai", "direct"], default="openai",
-                       help="API method to use")
-    parser.add_argument("--model-size", help="Cosmos model size (for direct method)")
-    parser.add_argument("--num-gpus", type=int, help="Number of GPUs (for direct method)")
-    parser.add_argument("--check-health", action="store_true",
-                       help="Only check service health and exit")
-    parser.add_argument("--create-example", action="store_true",
-                       help="Create example image for testing")
-    
-    args = parser.parse_args()
-    
-    # Initialize client
+# --------------------------------------------------------------------------- #
+# CLI
+# --------------------------------------------------------------------------- #
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description="Cosmos Video Generation Client")
+    p.add_argument("--base-url", default="http://localhost:8001")
+    p.add_argument("--prompt", default="A robot picking up an apple from a table")
+
+    media = p.add_mutually_exclusive_group()
+    media.add_argument("--image", help="Path to input image file")
+    media.add_argument("--image-url", help="URL to input image")
+    media.add_argument("--video", help="Path to input video file")
+    media.add_argument("--video-url", help="URL to input video")
+
+    p.add_argument(
+        "--num-frames",
+        type=int,
+        default=1,
+        help="num_conditional_frames (1 = single-frame, ≥5 = multi-frame)",
+    )
+    p.add_argument(
+        "--method",
+        choices=["openai", "direct"],
+        default="openai",
+        help="API method to use",
+    )
+    p.add_argument("--model-size", help="Cosmos model size (direct method)")
+    p.add_argument("--num-gpus", type=int, help="GPUs (direct method)")
+    p.add_argument("--output", default="/tmp/generated_video.mp4")
+    p.add_argument("--check-health", action="store_true", help="Only check health")
+    p.add_argument("--create-example", action="store_true")
+
+    args = p.parse_args()
     client = CosmosVideoClient(args.base_url)
-    
-    # Health check only
+
     if args.check_health:
-        try:
-            health = client.health_check()
-            print("Service Health Check:")
-            print(f"  Status: {health.get('status', 'unknown')}")
-            print(f"  Model Size: {health.get('cosmos_config', {}).get('model_size', 'unknown')}")
-            print(f"  GPUs: {health.get('cosmos_config', {}).get('num_gpus', 'unknown')}")
-            print(f"  Output Dir: {health.get('output_dir', 'unknown')}")
-            return
-        except Exception as e:
-            print(f"Health check failed: {e}")
-            sys.exit(1)
-    
-    # Create example image if requested
+        print(client.health_check())
+        return
+
     if args.create_example:
-        example_path = create_example_image()
-        if example_path:
-            print(f"Example image created at: {example_path}")
-            args.image = example_path
-        else:
-            print("Could not create example image")
-    
-    print(f"Cosmos Video Client")
-    print(f"Service URL: {args.base_url}")
-    print(f"Method: {args.method}")
-    print(f"Prompt: {args.prompt}")
-    if args.image:
-        print(f"Image: {args.image}")
-    if args.image_url:
-        print(f"Image URL: {args.image_url}")
-    print("-" * 50)
-    
-    # Check service health
+        args.image = create_example_image()
+        print(f"Example image written to {args.image}")
+
+    # --------------------------------------------------------------------- #
+    # Ping service
+    # --------------------------------------------------------------------- #
     try:
-        health = client.ping()
-        print(f"✓ Service is running (Model: {health.get('model', 'unknown')})")
-    except Exception as e:
-        print(f"✗ Service not available: {e}")
+        info = client.ping()
+        print(f"✓ Service OK – model {info.get('model')}")
+    except Exception as exc:
+        print(f"✗ Service unavailable: {exc}")
         sys.exit(1)
-    
-    # Generate video
-    print("Generating video...")
-    start_time = time.time()
-    
+
+    # --------------------------------------------------------------------- #
+    # Generate
+    # --------------------------------------------------------------------- #
+    print("Generating…")
+    t0 = time.time()
     if args.method == "openai":
-        result = client.generate_video_openai_style(
-            prompt=args.prompt,
-            image_path=args.image,
-            image_url=args.image_url
-        )
-    else:  # direct
-        result = client.generate_video_direct(
+        res = client.generate_video_openai_style(
             prompt=args.prompt,
             image_path=args.image,
             image_url=args.image_url,
-            model_size=args.model_size,
-            num_gpus=args.num_gpus
+            video_path=args.video,
+            video_url=args.video_url,
+            num_conditional_frames=args.num_frames,
         )
-    
-    generation_time = time.time() - start_time
-    
-    if result["success"]:
-        print(f"✓ Video generated successfully in {generation_time:.1f}s")
-        
-        # Get video URL
-        if args.method == "openai":
-            video_url = result["full_url"]
-            print(f"Video URL: {video_url}")
-            if result.get("metadata"):
-                print(f"Metadata: {result['metadata']}")
-        else:
-            video_url = result["full_download_url"]
-            print(f"Video URL: {video_url}")
-            print(f"Video Path: {result.get('video_path', 'unknown')}")
-        
-        # Download video
-        print(f"Downloading video to: {args.output}")
-        if client.download_video(video_url, args.output):
-            print("✓ Download completed successfully")
-            print(f"Final video saved at: {args.output}")
-        else:
-            print("✗ Download failed")
-            
+        success = res.get("success")
+        video_url = res.get("full_url")
     else:
-        print(f"✗ Video generation failed: {result['error']}")
-        if result.get('details'):
-            print(f"Details: {result['details']}")
+        res = client.generate_video_direct(
+            prompt=args.prompt,
+            image_path=args.image,
+            image_url=args.image_url,
+            video_path=args.video,
+            video_url=args.video_url,
+            model_size=args.model_size,
+            num_gpus=args.num_gpus,
+            num_conditional_frames=args.num_frames,
+        )
+        success = res.get("success")
+        video_url = res.get("full_download_url")
+
+    if not success:
+        print(f"✗ Generation failed: {res.get('error')}")
+        if res.get("details"):
+            print(res["details"])
+        sys.exit(1)
+
+    dt = time.time() - t0
+    print(f"✓ Generated in {dt:.1f}s → {video_url}")
+
+    # --------------------------------------------------------------------- #
+    # Download
+    # --------------------------------------------------------------------- #
+    if video_url:
+        client.download_video(video_url, args.output)
 
 
 if __name__ == "__main__":
