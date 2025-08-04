@@ -115,7 +115,7 @@ class CosmosVideoClient:
             response = self.session.post(
                 f"{self.base_url}/v1/chat/completions",
                 json=request_data,
-                timeout=300  # 5 minutes timeout for video generation
+                timeout=3000  # 5 minutes timeout for video generation
             )
             response.raise_for_status()
             
@@ -186,7 +186,7 @@ class CosmosVideoClient:
             response = self.session.post(
                 f"{self.base_url}/generate",
                 json=data,
-                timeout=300  # 5 minutes timeout
+                timeout=3000  # 5 minutes timeout
             )
             response.raise_for_status()
             

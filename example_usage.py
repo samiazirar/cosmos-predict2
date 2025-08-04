@@ -11,7 +11,7 @@ from cosmos_client import CosmosVideoClient
 
 def main():
     # Initialize client
-    client = CosmosVideoClient("http://localhost:8004")
+    client = CosmosVideoClient("http://localhost:8000")
     
     print("🎬 Cosmos Video Client Example")
     print("=" * 50)
