@@ -205,6 +205,7 @@ def _gen_multi_frame(
 
     try:
         output_path = os.path.join(OUT_DIR, f"cosmos_{uuid.uuid4().hex}.mp4")
+        print(f"Num cond. frames: {num_conditional_frames}")
         result = generate_cosmos_video(
             prompt=prompt,
             input_path=video_path,
@@ -251,8 +252,9 @@ class ChatMessage(BaseModel):
 class ChatCompletionRequest(BaseModel):
     model: str = Field(default="cosmos-video-001")
     messages: List[ChatMessage]
+    num_conditional_frames: Optional[int] = Field(default=None, description="Number of conditional frames for video generation")
 
-    # **Unknown top-level keys (like num_conditional_frames) are accepted**
+    # **Unknown top-level keys are accepted**
     class Config:
         extra = "allow"
 
@@ -351,12 +353,11 @@ def chat_completions(req: ChatCompletionRequest, http_request: Request):
     prompt = " ".join(prompt_parts).strip() or "(empty prompt)"
 
     # 3 — determine num_conditional_frames
-    raw_ncf = req.__dict__.get("num_conditional_frames")
-    if raw_ncf is None:
+    if req.num_conditional_frames is None:
         num_conditional_frames = DEFAULT_NUM_CONDITIONAL_FRAMES if video_path else 1
     else:
         try:
-            num_conditional_frames = int(raw_ncf)
+            num_conditional_frames = int(req.num_conditional_frames)
         except ValueError:
             raise HTTPException(400, "num_conditional_frames must be an integer")
 
