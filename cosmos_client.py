@@ -9,6 +9,7 @@ A Python client for the Cosmos Video Generation Service that now supports
 ▸ **num_conditional_frames** (1 = single-frame, ≥ 5 = multi-frame)  
 ▸ Both the **OpenAI-compatible** `/v1/chat/completions` and the
   **direct** `/generate` endpoints
+▸ **Additional cosmos arguments** like `--use_cuda_graphs` for performance optimization
 
 --------------------------------------------------------------------
 Quick examples
@@ -25,6 +26,16 @@ python cosmos_client.py --prompt "Turn last frame into Pixar style" \
 python cosmos_client.py --prompt "Make it snow" \
                         --video ./my_video.mp4 \
                         --num-frames 5
+
+# 4 — Use CUDA graphs optimization
+python cosmos_client.py --prompt "A robot in a garden" \
+                        --image ./frame.jpg \
+                        --use-cuda-graphs
+
+# 5 — Pass additional cosmos arguments
+python cosmos_client.py --prompt "A robot in a garden" \
+                        --image ./frame.jpg \
+                        --cosmos-args --some-flag --another-option value
 
 Run  `python cosmos_client.py -h`  to see all options.
 """
@@ -121,12 +132,15 @@ class CosmosVideoClient:
         video_url: Optional[str] = None,
         num_conditional_frames: int = 1,
         model: str = "cosmos-video-001",
+        cosmos_args: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Call `/v1/chat/completions`.
 
         Exactly one of {image_path, image_url, video_path, video_url}
         may be supplied.
+        
+        cosmos_args: Optional dict of additional arguments to pass to cosmos command.
         """
         # -----------------------------------------------------------------
         # Validate & prepare media
@@ -158,6 +172,10 @@ class CosmosVideoClient:
             "num_conditional_frames": num_conditional_frames,
             "messages": [{"role": "user", "content": content}],
         }
+
+        # Add cosmos-specific arguments if provided
+        if cosmos_args:
+            req_json["cosmos_args"] = cosmos_args
 
         try:
             res = self.session.post(
@@ -201,8 +219,12 @@ class CosmosVideoClient:
         num_conditional_frames: int = 1,
         model_size: Optional[str] = None,
         num_gpus: Optional[int] = None,
+        cosmos_args: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Call `/generate`."""
+        """Call `/generate`.
+        
+        cosmos_args: Optional dict of additional arguments to pass to cosmos command.
+        """
         supplied = [v for v in (image_path, image_url, video_path, video_url) if v]
         if len(supplied) > 1:
             raise ValueError("Provide at most one media input (image or video).")
@@ -231,6 +253,10 @@ class CosmosVideoClient:
             data["image_url"] = video_url
         elif video_url:
             data["image_url"] = video_url
+
+        # Add cosmos-specific arguments if provided
+        if cosmos_args:
+            data["cosmos_args"] = cosmos_args
 
         try:
             res = self.session.post(
@@ -322,6 +348,12 @@ def main() -> None:
     p.add_argument("--output", default="/tmp/generated_video.mp4")
     p.add_argument("--check-health", action="store_true", help="Only check health")
     p.add_argument("--create-example", action="store_true")
+    
+    # Cosmos-specific arguments
+    p.add_argument("--use-cuda-graphs", action="store_true", 
+                   help="Enable CUDA graphs optimization")
+    p.add_argument("--cosmos-args", nargs="*", default=[], 
+                   help="Additional arguments to pass to cosmos command (e.g., --cosmos-args --arg1 value1 --arg2)")
 
     args = p.parse_args()
     client = CosmosVideoClient(args.base_url)
@@ -347,7 +379,47 @@ def main() -> None:
     # --------------------------------------------------------------------- #
     # Generate
     # --------------------------------------------------------------------- #
+    
+    # Build cosmos arguments dictionary
+    cosmos_args = {}
+    
+    # Handle specific flags
+    if args.use_cuda_graphs:
+        cosmos_args["use_cuda_graphs"] = True
+    
+    # Handle additional arguments from --cosmos-args
+    if args.cosmos_args:
+        i = 0
+        while i < len(args.cosmos_args):
+            arg = args.cosmos_args[i]
+            if arg.startswith("--"):
+                key = arg[2:]  # Remove '--' prefix
+                # Check if next item is a value or another flag
+                if i + 1 < len(args.cosmos_args) and not args.cosmos_args[i + 1].startswith("--"):
+                    # Next item is a value
+                    value = args.cosmos_args[i + 1]
+                    # Try to convert to appropriate type
+                    if value.lower() in ("true", "false"):
+                        cosmos_args[key] = value.lower() == "true"
+                    elif value.isdigit():
+                        cosmos_args[key] = int(value)
+                    else:
+                        try:
+                            cosmos_args[key] = float(value)
+                        except ValueError:
+                            cosmos_args[key] = value
+                    i += 2
+                else:
+                    # Flag without value (boolean)
+                    cosmos_args[key] = True
+                    i += 1
+            else:
+                i += 1
+    
     print("Generating…")
+    if cosmos_args:
+        print(f"Using cosmos arguments: {cosmos_args}")
+        
     t0 = time.time()
     if args.method == "openai":
         res = client.generate_video_openai_style(
@@ -357,6 +429,7 @@ def main() -> None:
             video_path=args.video,
             video_url=args.video_url,
             num_conditional_frames=args.num_frames,
+            cosmos_args=cosmos_args if cosmos_args else None,
         )
         success = res.get("success")
         video_url = res.get("full_url")
@@ -370,6 +443,7 @@ def main() -> None:
             model_size=args.model_size,
             num_gpus=args.num_gpus,
             num_conditional_frames=args.num_frames,
+            cosmos_args=cosmos_args if cosmos_args else None,
         )
         success = res.get("success")
         video_url = res.get("full_download_url")
