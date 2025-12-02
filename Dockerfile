@@ -1,70 +1,65 @@
-# Use NVIDIA PyTorch container as base image
-FROM nvcr.io/nvidia/pytorch:25.04-py3
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Dockerfile using uv environment.
+
 ARG TARGETPLATFORM
+ARG BASE_IMAGE=nvidia/cuda:12.6.3-cudnn-devel-ubuntu24.04
 
-# Install basic tools
-RUN apt-get update && apt-get install -y git tree ffmpeg wget
-RUN rm /bin/sh && ln -s /bin/bash /bin/sh
-RUN if [[ ${TARGETPLATFORM} == 'linux/amd64' ]]; then ln -s /lib64/libcuda.so.1 /lib64/libcuda.so; fi
-RUN apt-get install -y libglib2.0-0
-RUN sed -i -e 's/h11==0.14.0/h11==0.16.0/g' /etc/pip/constraint.txt
+FROM ${BASE_IMAGE}
 
-# Install Flash Attention 3
-RUN MAX_JOBS=$(( $(nproc) / 4 )) pip install git+https://github.com/Dao-AILab/flash-attention.git@27f501d#subdirectory=hopper
-COPY cosmos_predict2/utils/flash_attn_3/flash_attn_interface.py /usr/local/lib/python3.12/dist-packages/flash_attn_3/flash_attn_interface.py
-COPY cosmos_predict2/utils/flash_attn_3/te_attn.diff /tmp/te_attn.diff
-RUN patch /usr/local/lib/python3.12/dist-packages/transformer_engine/pytorch/attention.py /tmp/te_attn.diff
+# Set the DEBIAN_FRONTEND environment variable to avoid interactive prompts during apt operations.
+ENV DEBIAN_FRONTEND=noninteractive
 
-# Installing decord from source on ARM
-COPY Video_Codec_SDK_13.0.19.zip* /workspace/Video_Codec_SDK_13.0.19.zip
-RUN if [[ ${TARGETPLATFORM} == 'linux/arm64' ]]; then export DEBIAN_FRONTEND=noninteractive && \
-apt-get update && \
-apt-get install -y build-essential python3-dev python3-setuptools make cmake \
-                   ffmpeg libavcodec-dev libavfilter-dev libavformat-dev libavutil-dev git ssh unzip nano python3-pip && \
-git clone --recursive https://github.com/dmlc/decord && \
-cd decord && \
-find . -type f -exec sed -i "s/AVInputFormat \*/const AVInputFormat \*/g" {} \; && \
-sed -i "s/[[:space:]]AVCodec \*dec/const AVCodec \*dec/" src/video/video_reader.cc && \
-sed -i "s/avcodec\.h>/avcodec\.h>\n#include <libavcodec\/bsf\.h>/" src/video/ffmpeg/ffmpeg_common.h && \
-mkdir build && cd build && \
-scp /workspace/Video_Codec_SDK_13.0.19.zip . && \
-unzip Video_Codec_SDK_13.0.19.zip && \
-cp Video_Codec_SDK_13.0.19/Lib/linux/stubs/aarch64/* /usr/local/cuda/lib64/ && \
-cp Video_Codec_SDK_13.0.19/Interface/* /usr/local/cuda/include && \
-cmake .. -DUSE_CUDA=ON -DCMAKE_BUILD_TYPE=Release && \
-make -j 4 && \
-cd ../python && python3 setup.py install; fi
-RUN if [[ ${TARGETPLATFORM} == 'linux/arm64' ]]; then apt remove -y python3-blinker; fi
+# Install packages
+RUN --mount=type=cache,target=/var/cache/apt \
+    --mount=type=cache,target=/var/lib/apt \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        curl \
+        ffmpeg \
+        git \
+        libgl1 \
+        libglib2.0-0 \
+        tree \
+        wget
 
-# Install the dependencies from requirements-docker.txt
-COPY ./requirements-docker.txt /requirements.txt
-ARG NATTEN_CUDA_ARCH="8.0;8.6;8.9;9.0;10.0;10.3;12.0"
-RUN pip install --no-cache-dir -r /requirements.txt
-RUN mkdir -p /workspace
-WORKDIR /workspace
+# Install uv: https://docs.astral.sh/uv/getting-started/installation/
+# https://github.com/astral-sh/uv-docker-example/blob/main/Dockerfile
+COPY --from=ghcr.io/astral-sh/uv:0.8.12 /uv /uvx /usr/local/bin/
+# Enable bytecode compilation
+ENV UV_COMPILE_BYTECODE=1
+# Copy from the cache instead of linking since it's a mounted volume
+ENV UV_LINK_MODE=copy
+# Ensure installed tools can be executed out of the box
+ENV UV_TOOL_BIN_DIR=/usr/local/bin
 
-
-#Install the other required packages
-COPY ./requirements-fast_api.txt /requirements.txt
-RUN pip install --no-cache-dir -r /requirements.txt
-RUN mkdir -p /workspace
+# Install just: https://just.systems/man/en/pre-built-binaries.html
+RUN curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin --tag 1.42.4
 
 WORKDIR /workspace
 
-#download the cosmos_predict 2 from the git repo and copy all files to the workspace
-#remove the previous repo if it exists
-RUN rm -rf /workspace/cosmos-predict2
-RUN git clone https://github.com/samiazirar/cosmos-predict2.git 
-RUN mv /workspace/cosmos-predict2/* /workspace/
-RUN mv /workspace/cosmos-predict2/.git /workspace/
-RUN rm -rf /workspace/cosmos-predict2
-#copy all files at once to the workspace from the pulled cosmos_predict2 repo
-# RUN cp -r /workspace/cosmos-predict2/* /workspace/
-#start from the repo
-#your root is the folder where the repo is cloned in 
+# Install the project's dependencies using the lockfile and settings
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    --mount=type=bind,source=.python-version,target=.python-version \
+    uv sync --locked --no-install-project --extra cu126
 
+# Place executables in the environment at the front of the path
+ENV PATH="/workspace/.venv/bin:$PATH"
 
-
-
+ENTRYPOINT ["/workspace/bin/entrypoint.sh"]
 CMD ["/bin/bash"]
-
